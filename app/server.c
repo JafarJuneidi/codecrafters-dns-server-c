@@ -1,11 +1,21 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+typedef struct Message {
+  uint16_t packet_identifier;
+  uint16_t other;
+  uint16_t question_count;
+  uint16_t answer_record_count;
+  uint16_t authority_record_count;
+  uint16_t additional_record_count;
+} Message;
 
 int main() {
   // Disable output buffering
@@ -57,10 +67,18 @@ int main() {
     printf("Received %d bytes: %s\n", bytesRead, buffer);
 
     // Create an empty response
-    char response[1] = {'\0'};
+    // char response[1] = {'\0'};
+    Message response = {
+        .packet_identifier = htons(1234),
+        .other = htons(0b1000000000000000),
+        .question_count = 0,
+        .answer_record_count = 0,
+        .authority_record_count = 0,
+        .additional_record_count = 0,
+    };
 
     // Send response
-    if (sendto(udpSocket, response, sizeof(response), 0,
+    if (sendto(udpSocket, &response, sizeof(response), 0,
                (struct sockaddr *)&clientAddress,
                sizeof(clientAddress)) == -1) {
       perror("Failed to send response");
