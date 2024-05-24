@@ -8,44 +8,71 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+void encode_string(unsigned char *buffer, size_t *index, char *name) {
+  size_t name_len = strlen(name);
+  char *dot_pos = strchr(name, '.');
+  buffer[(*index)++] = dot_pos - name;
+  for (size_t i = 0; i < name_len; ++i) {
+    if (name[i] == '.') {
+      buffer[(*index)++] = name_len - i - 1;
+      continue;
+    }
+    buffer[(*index)++] = name[i];
+  }
+  buffer[(*index)++] = 0x00;
+}
+
 void add_header(unsigned char *response, uint16_t packet_identifier,
                 uint16_t other, uint16_t question_count,
                 uint16_t answer_record_count, uint16_t authority_record_count,
                 uint16_t additional_record_count) {
   size_t index = 0;
   response[index++] = (packet_identifier & 0xff00) >> 8;
-  response[index++] = packet_identifier & 0x00ff;
+  response[index++] = packet_identifier & 0xff;
   response[index++] = (other & 0xff00) >> 8;
-  response[index++] = other & 0x00ff;
+  response[index++] = other & 0xff;
   response[index++] = (question_count & 0xff00) >> 8;
-  response[index++] = question_count & 0x00ff;
+  response[index++] = question_count & 0xff;
   response[index++] = (answer_record_count & 0xff00) >> 8;
-  response[index++] = answer_record_count & 0x00ff;
+  response[index++] = answer_record_count & 0xff;
   response[index++] = (authority_record_count & 0xff00) >> 8;
-  response[index++] = authority_record_count & 0x00ff;
+  response[index++] = authority_record_count & 0xff;
   response[index++] = (additional_record_count & 0xff00) >> 8;
-  response[index++] = additional_record_count & 0x00ff;
+  response[index++] = additional_record_count & 0xff;
 }
 
 void add_question(unsigned char *response, char *name, uint16_t type,
                   uint16_t class) {
   size_t index = 12;
-  size_t name_len = strlen(name);
-  char *dot_pos = strchr(name, '.');
-  response[index++] = dot_pos - name;
-  for (size_t i = 0; i < name_len; ++i) {
-    if (name[i] == '.') {
-      response[index++] = name_len - i - 1;
-      continue;
-    }
-    response[index++] = name[i];
-  }
-  response[index++] = 0x00;
+  encode_string(response, &index, name);
 
   response[index++] = (type & 0xff00) >> 8;
-  response[index++] = type & 0x00ff;
+  response[index++] = type & 0xff;
   response[index++] = (class & 0xff00) >> 8;
-  response[index++] = class & 0x00ff;
+  response[index++] = class & 0xff;
+}
+
+void add_answer(unsigned char *response, char *name, uint16_t type,
+                uint16_t class, uint32_t ttl, uint16_t length, char *data) {
+  size_t index = 33;
+  encode_string(response, &index, name);
+
+  response[index++] = (type & 0xff00) >> 8;
+  response[index++] = type & 0xff;
+
+  response[index++] = (class & 0xff00) >> 8;
+  response[index++] = class & 0xff;
+
+  response[index++] = (ttl & 0xff000000) >> 24;
+  response[index++] = (ttl & 0xff0000) >> 16;
+  response[index++] = (ttl & 0xff00) >> 8;
+  response[index++] = ttl & 0xff;
+
+  response[index++] = (length & 0xff00) >> 8;
+  response[index++] = length & 0xff;
+
+  memcpy(response + index, data, strlen(data));
+  index += 4;
 }
 
 // Function to print bytes of the response array in hexadecimal format
@@ -117,8 +144,9 @@ int main() {
     // reset response to 0s
     memset(response, 0, sizeof(response));
 
-    add_header(response, 1234, 0x8000, 1, 0, 0, 0);
+    add_header(response, 1234, 0x8000, 1, 1, 0, 0);
     add_question(response, "codecrafters.io", 1, 1);
+    add_answer(response, "codecrafters.io", 1, 1, 60, 4, "8888");
     // printResponseHex(response, 512);
 
     // Send response
@@ -134,7 +162,13 @@ int main() {
   return 0;
 }
 
-// stage 2 response
+// stage 3 response
 // 04 D2 80 00 00 01 00 00 00 00 00 00 0C 63 6F 64
 // 65 63 72 61 66 74 65 72 73 02 69 6F 00 00 01 00
 // 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+// stage 4 response
+// 04 D2 80 00 00 01 00 01 00 00 00 00 0C 63 6F 64
+// 65 63 72 61 66 74 65 72 73 02 69 6F 00 00 01 00
+// 01 0C 63 6F 64 65 63 72 61 66 74 65 72 73 02 69
+// 6F 00 00 01 00 01 00 00 00 3C 00 04 38 38 38 38
