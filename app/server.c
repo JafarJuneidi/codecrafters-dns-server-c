@@ -8,14 +8,61 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-typedef struct Message {
-  uint16_t packet_identifier;
-  uint16_t other;
-  uint16_t question_count;
-  uint16_t answer_record_count;
-  uint16_t authority_record_count;
-  uint16_t additional_record_count;
-} Message;
+void add_header(unsigned char *response, uint16_t packet_identifier,
+                uint16_t other, uint16_t question_count,
+                uint16_t answer_record_count, uint16_t authority_record_count,
+                uint16_t additional_record_count) {
+  size_t index = 0;
+  response[index++] = (packet_identifier & 0xff00) >> 8;
+  response[index++] = packet_identifier & 0x00ff;
+  response[index++] = (other & 0xff00) >> 8;
+  response[index++] = other & 0x00ff;
+  response[index++] = (question_count & 0xff00) >> 8;
+  response[index++] = question_count & 0x00ff;
+  response[index++] = (answer_record_count & 0xff00) >> 8;
+  response[index++] = answer_record_count & 0x00ff;
+  response[index++] = (authority_record_count & 0xff00) >> 8;
+  response[index++] = authority_record_count & 0x00ff;
+  response[index++] = (additional_record_count & 0xff00) >> 8;
+  response[index++] = additional_record_count & 0x00ff;
+}
+
+void add_question(unsigned char *response, char *name, uint16_t type,
+                  uint16_t class) {
+  size_t index = 12;
+  size_t name_len = strlen(name);
+  char *dot_pos = strchr(name, '.');
+  response[index++] = dot_pos - name;
+  for (size_t i = 0; i < name_len; ++i) {
+    if (name[i] == '.') {
+      response[index++] = name_len - i - 1;
+      continue;
+    }
+    response[index++] = name[i];
+  }
+  response[index++] = 0x00;
+
+  response[index++] = (type & 0xff00) >> 8;
+  response[index++] = type & 0x00ff;
+  response[index++] = (class & 0xff00) >> 8;
+  response[index++] = class & 0x00ff;
+}
+
+// Function to print bytes of the response array in hexadecimal format
+void printResponseHex(const unsigned char *response, size_t size) {
+  printf("Response %ld:\n", size);
+  for (size_t i = 0; i < size; ++i) {
+    printf("%02X ", response[i]); // Print each byte in hexadecimal format
+    if ((i + 1) % 16 ==
+        0) { // Newline after every 16 bytes for better readability
+      printf("\n");
+    }
+  }
+  // Print a newline if the last line didn't end with one
+  if (size % 16 != 0) {
+    printf("\n");
+  }
+}
 
 int main() {
   // Disable output buffering
@@ -51,7 +98,8 @@ int main() {
   }
 
   int bytesRead;
-  char buffer[512];
+  unsigned char buffer[512];
+  unsigned char response[512];
   socklen_t clientAddrLen = sizeof(clientAddress);
 
   while (1) {
@@ -66,19 +114,15 @@ int main() {
     buffer[bytesRead] = '\0';
     printf("Received %d bytes: %s\n", bytesRead, buffer);
 
-    // Create an empty response
-    // char response[1] = {'\0'};
-    Message response = {
-        .packet_identifier = htons(1234),
-        .other = htons(0b1000000000000000),
-        .question_count = 0,
-        .answer_record_count = 0,
-        .authority_record_count = 0,
-        .additional_record_count = 0,
-    };
+    // reset response to 0s
+    memset(response, 0, sizeof(response));
+
+    add_header(response, 1234, 0x8000, 1, 0, 0, 0);
+    add_question(response, "codecrafters.io", 1, 1);
+    // printResponseHex(response, 512);
 
     // Send response
-    if (sendto(udpSocket, &response, sizeof(response), 0,
+    if (sendto(udpSocket, response, sizeof(response), 0,
                (struct sockaddr *)&clientAddress,
                sizeof(clientAddress)) == -1) {
       perror("Failed to send response");
@@ -89,3 +133,8 @@ int main() {
 
   return 0;
 }
+
+// stage 2 response
+// 04 D2 80 00 00 01 00 00 00 00 00 00 0C 63 6F 64
+// 65 63 72 61 66 74 65 72 73 02 69 6F 00 00 01 00
+// 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
