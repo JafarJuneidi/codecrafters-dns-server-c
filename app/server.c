@@ -22,23 +22,34 @@ void encode_string(unsigned char *buffer, size_t *index, char *name) {
   buffer[(*index)++] = 0x00;
 }
 
-void add_header(unsigned char *response, uint16_t packet_identifier,
-                uint16_t other, uint16_t question_count,
-                uint16_t answer_record_count, uint16_t authority_record_count,
-                uint16_t additional_record_count) {
-  size_t index = 0;
-  response[index++] = (packet_identifier & 0xff00) >> 8;
-  response[index++] = packet_identifier & 0xff;
-  response[index++] = (other & 0xff00) >> 8;
-  response[index++] = other & 0xff;
-  response[index++] = (question_count & 0xff00) >> 8;
-  response[index++] = question_count & 0xff;
-  response[index++] = (answer_record_count & 0xff00) >> 8;
-  response[index++] = answer_record_count & 0xff;
-  response[index++] = (authority_record_count & 0xff00) >> 8;
-  response[index++] = authority_record_count & 0xff;
-  response[index++] = (additional_record_count & 0xff00) >> 8;
-  response[index++] = additional_record_count & 0xff;
+void add_header(unsigned char *response, unsigned char *buffer) {
+  // I imagine the buffer going from left to right.
+  // MSB to the left and LSB to the right
+
+  // ID 8 bits
+  response[0] = buffer[0];
+  // ID 8 bits
+  response[1] = buffer[1];
+  // QR 1 bit, OPCODE 4 bits, AA 1 bit, TC 1 bit, RD 1 bit
+  response[2] = buffer[2] | 0x80;
+  // RA 1 bit, Z 3 bits, RCODE 4 bits
+  response[3] = (buffer[2] & 0b01111000) == 0 ? 0 : 0x04;
+  // QDCOUNT 8 bits
+  response[4] = buffer[4];
+  // QDCOUNT 8 bits
+  response[5] = buffer[5];
+  // ANCOUNT 8 bits
+  response[6] = buffer[6];
+  // ANCOUNT 8 bits
+  response[7] = 0x01;
+  // NSCOUNT 8 bits
+  response[8] = buffer[8];
+  // NSCOUNT 8 bits
+  response[9] = buffer[9];
+  // ARCOUNT 8 bits
+  response[10] = buffer[10];
+  // ARCOUNT 8 bits
+  response[11] = buffer[11];
 }
 
 void add_question(unsigned char *response, char *name, uint16_t type,
@@ -144,7 +155,7 @@ int main() {
     // reset response to 0s
     memset(response, 0, sizeof(response));
 
-    add_header(response, 1234, 0x8000, 1, 1, 0, 0);
+    add_header(response, buffer);
     add_question(response, "codecrafters.io", 1, 1);
     add_answer(response, "codecrafters.io", 1, 1, 60, 4, "8888");
     // printResponseHex(response, 512);
