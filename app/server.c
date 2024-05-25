@@ -23,8 +23,9 @@ void encode_string(unsigned char *buffer, size_t *index, char *name) {
 }
 
 void add_header(unsigned char *response, unsigned char *buffer) {
-  // I imagine the buffer going from left to right.
-  // MSB to the left and LSB to the right
+  // big endian (start putting the bigger address)
+  // low address          high address
+  // [MSB, ....................., LSB]
 
   // ID 8 bits
   response[0] = buffer[0];
@@ -52,43 +53,47 @@ void add_header(unsigned char *response, unsigned char *buffer) {
   response[11] = buffer[11];
 }
 
-void add_question(unsigned char *response, char *name, uint16_t type,
-                  uint16_t class) {
-  size_t index = 12;
-  encode_string(response, &index, name);
+size_t add_question(unsigned char *response, const unsigned char *buffer) {
+  const unsigned char *ptr = (buffer + 12);
+  while (*ptr != '\0') {
+    ptr += *ptr + 1;
+  }
+  ptr++;
 
-  response[index++] = (type & 0xff00) >> 8;
-  response[index++] = type & 0xff;
-  response[index++] = (class & 0xff00) >> 8;
-  response[index++] = class & 0xff;
+  memcpy(response + 12, buffer + 12, ptr - buffer + 12);
+
+  size_t index = ptr - buffer;
+
+  response[index++] = 0x00;
+  response[index++] = 0x01;
+  response[index++] = 0x00;
+  response[index++] = 0x01;
+  return index;
 }
 
-void add_answer(unsigned char *response, char *name, uint16_t type,
-                uint16_t class, uint32_t ttl, uint16_t length, char *data) {
-  size_t index = 33;
-  encode_string(response, &index, name);
+void add_answer(unsigned char *response, const unsigned char *buffer,
+                size_t index) {
+  memcpy(response + index, response + 12, index - 12);
+  index += index - 12;
 
-  response[index++] = (type & 0xff00) >> 8;
-  response[index++] = type & 0xff;
+  response[index++] = 0x00;
+  response[index++] = 0x00;
+  response[index++] = 0x00;
+  response[index++] = 60;
 
-  response[index++] = (class & 0xff00) >> 8;
-  response[index++] = class & 0xff;
+  response[index++] = 0x00;
+  response[index++] = 0x04;
 
-  response[index++] = (ttl & 0xff000000) >> 24;
-  response[index++] = (ttl & 0xff0000) >> 16;
-  response[index++] = (ttl & 0xff00) >> 8;
-  response[index++] = ttl & 0xff;
-
-  response[index++] = (length & 0xff00) >> 8;
-  response[index++] = length & 0xff;
-
-  memcpy(response + index, data, strlen(data));
-  index += 4;
+  response[index++] = 0x08;
+  response[index++] = 0x08;
+  response[index++] = 0x08;
+  response[index++] = 0x08;
 }
 
 // Function to print bytes of the response array in hexadecimal format
-void printResponseHex(const unsigned char *response, size_t size) {
-  printf("Response %ld:\n", size);
+void printResponseHex(const char *str, const unsigned char *response,
+                      size_t size) {
+  printf("%s %ld:\n", str, size);
   for (size_t i = 0; i < size; ++i) {
     printf("%02X ", response[i]); // Print each byte in hexadecimal format
     if ((i + 1) % 16 ==
@@ -150,15 +155,16 @@ int main() {
     }
 
     buffer[bytesRead] = '\0';
-    printf("Received %d bytes: %s\n", bytesRead, buffer);
+    // printf("Received %d bytes: %s\n", bytesRead, buffer);
+    // printResponseHex("Request", buffer, 512);
 
     // reset response to 0s
     memset(response, 0, sizeof(response));
 
     add_header(response, buffer);
-    add_question(response, "codecrafters.io", 1, 1);
-    add_answer(response, "codecrafters.io", 1, 1, 60, 4, "8888");
-    // printResponseHex(response, 512);
+    size_t index = add_question(response, buffer);
+    add_answer(response, buffer, index);
+    // printResponseHex("Response", response, 512);
 
     // Send response
     if (sendto(udpSocket, response, sizeof(response), 0,
