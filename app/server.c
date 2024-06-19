@@ -1,7 +1,6 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +41,7 @@ void add_header(unsigned char *response, unsigned char *buffer) {
   // ANCOUNT 8 bits
   response[6] = buffer[6];
   // ANCOUNT 8 bits
-  response[7] = 0x01;
+  response[7] = buffer[5]; // Same as question count
   // NSCOUNT 8 bits
   response[8] = buffer[8];
   // NSCOUNT 8 bits
@@ -53,41 +52,66 @@ void add_header(unsigned char *response, unsigned char *buffer) {
   response[11] = buffer[11];
 }
 
-size_t add_question(unsigned char *response, const unsigned char *buffer) {
-  const unsigned char *ptr = (buffer + 12);
-  while (*ptr != '\0') {
-    ptr += *ptr + 1;
+void add_question(unsigned char *response, const unsigned char *buffer,
+                  size_t *request_index, size_t *response_index) {
+  const unsigned char *ptr = (buffer + *request_index);
+  // Handle DNS name
+  int flag = 0;
+  while (*ptr != 0) {
+    if ((*ptr & 0xC0) == 0xC0) { // Pointer to another location
+      size_t offset = ((*ptr & 0x3F) << 8) | *(ptr + 1);
+      ptr = buffer + offset;
+      *request_index += 2;
+      flag = 1;
+      continue;
+    }
+    size_t label_length = *ptr + 1;
+    memcpy(response + *response_index, ptr, label_length);
+    ptr += label_length;
+    *response_index += label_length;
+    if (!flag) {
+      *request_index += label_length;
+    }
   }
-  ptr++;
 
-  memcpy(response + 12, buffer + 12, ptr - buffer + 12);
+  // Copy the null byte for the end of the name
+  response[(*response_index)++] = 0x00;
+  if (!flag) {
+    *request_index += 1;
+  }
 
-  size_t index = ptr - buffer;
+  *request_index += 4;
 
-  response[index++] = 0x00;
-  response[index++] = 0x01;
-  response[index++] = 0x00;
-  response[index++] = 0x01;
-  return index;
+  response[(*response_index)++] = 0x00;
+  response[(*response_index)++] = 0x01;
+  response[(*response_index)++] = 0x00;
+  response[(*response_index)++] = 0x01;
 }
 
-void add_answer(unsigned char *response, const unsigned char *buffer,
-                size_t index) {
-  memcpy(response + index, response + 12, index - 12);
-  index += index - 12;
+void add_answer(unsigned char *response, size_t *response_index) {
+  size_t index = 12;
+  size_t old_response_index = *response_index;
+  while (index < old_response_index) {
+    size_t length = strlen((char *)response + index) + 5;
 
-  response[index++] = 0x00;
-  response[index++] = 0x00;
-  response[index++] = 0x00;
-  response[index++] = 60;
+    memcpy(response + *response_index, response + index, length);
 
-  response[index++] = 0x00;
-  response[index++] = 0x04;
+    *response_index += length;
+    index += length;
 
-  response[index++] = 0x08;
-  response[index++] = 0x08;
-  response[index++] = 0x08;
-  response[index++] = 0x08;
+    response[(*response_index)++] = 0x00;
+    response[(*response_index)++] = 0x00;
+    response[(*response_index)++] = 0x00;
+    response[(*response_index)++] = 60;
+
+    response[(*response_index)++] = 0x00;
+    response[(*response_index)++] = 0x04;
+
+    response[(*response_index)++] = 0x08;
+    response[(*response_index)++] = 0x08;
+    response[(*response_index)++] = 0x08;
+    response[(*response_index)++] = 0x08;
+  }
 }
 
 // Function to print bytes of the response array in hexadecimal format
@@ -140,7 +164,9 @@ int main() {
     return 1;
   }
 
-  int bytesRead;
+  size_t bytesRead;
+  size_t request_index;
+  size_t response_index;
   unsigned char buffer[512];
   unsigned char response[512];
   socklen_t clientAddrLen = sizeof(clientAddress);
@@ -155,16 +181,26 @@ int main() {
     }
 
     buffer[bytesRead] = '\0';
-    // printf("Received %d bytes: %s\n", bytesRead, buffer);
-    // printResponseHex("Request", buffer, 512);
+    // printf("Received %zu bytes: %s\n", bytesRead, buffer);
+    // printResponseHex("Request", buffer, bytesRead);
 
     // reset response to 0s
     memset(response, 0, sizeof(response));
+    request_index = 12;
+    response_index = 12;
 
     add_header(response, buffer);
-    size_t index = add_question(response, buffer);
-    add_answer(response, buffer, index);
-    // printResponseHex("Response", response, 512);
+    while (request_index < bytesRead) {
+      add_question(response, buffer, &request_index, &response_index);
+      // printf("response_index: %zu\n", response_index);
+      // printf("request_index: %zu\n", request_index);
+      // printResponseHex("Response", response, response_index);
+      // printf("----------------------------------------\n");
+    }
+    add_answer(response, &response_index);
+    // printResponseHex("Response", response, bytesRead);
+    // printResponseHex("Response", response, response_index);
+    // printf("----------------------------------------\n");
 
     // Send response
     if (sendto(udpSocket, response, sizeof(response), 0,
