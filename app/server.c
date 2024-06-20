@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -6,6 +7,8 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#define BUFFER_SIZE 512
 
 void encode_string(unsigned char *buffer, size_t *index, char *name) {
   size_t name_len = strlen(name);
@@ -21,7 +24,7 @@ void encode_string(unsigned char *buffer, size_t *index, char *name) {
   buffer[(*index)++] = 0x00;
 }
 
-void add_header(unsigned char *response, unsigned char *buffer) {
+char add_header(unsigned char *response, unsigned char *buffer) {
   // big endian (start putting the bigger address)
   // low address          high address
   // [MSB, ....................., LSB]
@@ -31,17 +34,21 @@ void add_header(unsigned char *response, unsigned char *buffer) {
   // ID 8 bits
   response[1] = buffer[1];
   // QR 1 bit, OPCODE 4 bits, AA 1 bit, TC 1 bit, RD 1 bit
-  response[2] = buffer[2] | 0x80;
+  // response[2] = buffer[2] | 0x80;
+  response[2] = 0;
   // RA 1 bit, Z 3 bits, RCODE 4 bits
-  response[3] = (buffer[2] & 0b01111000) == 0 ? 0 : 0x04;
+  // response[3] = (buffer[2] & 0b01111000) == 0 ? 0 : 0x04;
+  response[3] = 0;
   // QDCOUNT 8 bits
   response[4] = buffer[4];
   // QDCOUNT 8 bits
-  response[5] = buffer[5];
+  // response[5] = buffer[5];
+  response[5] = 0x01;
   // ANCOUNT 8 bits
   response[6] = buffer[6];
   // ANCOUNT 8 bits
-  response[7] = buffer[5]; // Same as question count
+  // response[7] = buffer[5]; // Same as question count
+  response[7] = 0x00;
   // NSCOUNT 8 bits
   response[8] = buffer[8];
   // NSCOUNT 8 bits
@@ -50,6 +57,8 @@ void add_header(unsigned char *response, unsigned char *buffer) {
   response[10] = buffer[10];
   // ARCOUNT 8 bits
   response[11] = buffer[11];
+
+  return buffer[5];
 }
 
 void add_question(unsigned char *response, const unsigned char *buffer,
@@ -131,9 +140,19 @@ void printResponseHex(const char *str, const unsigned char *response,
   }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   // Disable output buffering
   setbuf(stdout, NULL);
+
+  // Connect to forward socket
+  char *resolver = argv[2];
+  char *colon_pos = strchr(resolver, ':');
+  size_t ip_length = colon_pos - resolver;
+  char ip[ip_length + 1];
+  strncpy(ip, resolver, ip_length);
+  ip[ip_length] = '\0';
+  char *port_str = colon_pos + 1;
+  int port = atoi(port_str);
 
   int udpSocket, client_addr_len;
   struct sockaddr_in clientAddress;
@@ -167,8 +186,10 @@ int main() {
   size_t bytesRead;
   size_t request_index;
   size_t response_index;
-  unsigned char buffer[512];
-  unsigned char response[512];
+  unsigned char buffer[BUFFER_SIZE];
+  unsigned char response[BUFFER_SIZE];
+  unsigned char answers_buffer[BUFFER_SIZE];
+  size_t answers_buffer_index = 0;
   socklen_t clientAddrLen = sizeof(clientAddress);
 
   while (1) {
@@ -181,25 +202,98 @@ int main() {
     }
 
     buffer[bytesRead] = '\0';
-    // printf("Received %zu bytes: %s\n", bytesRead, buffer);
+    // printf("Received %zu bytes\n", bytesRead);
     // printResponseHex("Request", buffer, bytesRead);
+
+    // start
+    // Forward the buffer to the server at 127.0.0.1:5453
+    int forwardSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (forwardSocket == -1) {
+      perror("Socket creation failed for forwarding");
+      exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in forward_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(5354),
+    };
+
+    if (inet_pton(AF_INET, "127.0.0.1", &forward_addr.sin_addr) <= 0) {
+      perror("Invalid address for forwarding");
+      close(forwardSocket);
+      exit(EXIT_FAILURE);
+    }
+    // end
 
     // reset response to 0s
     memset(response, 0, sizeof(response));
     request_index = 12;
     response_index = 12;
+    answers_buffer_index = 0;
 
-    add_header(response, buffer);
+    char num_questions = add_header(response, buffer);
     while (request_index < bytesRead) {
+      unsigned char send_buffer[BUFFER_SIZE];
+      unsigned char recv_buffer[BUFFER_SIZE];
+      memset(send_buffer, 0, sizeof(send_buffer));
+      memset(recv_buffer, 0, sizeof(recv_buffer));
+
+      memcpy(send_buffer, response, 12);
+
+      size_t old_response_index = response_index;
       add_question(response, buffer, &request_index, &response_index);
-      // printf("response_index: %zu\n", response_index);
-      // printf("request_index: %zu\n", request_index);
-      // printResponseHex("Response", response, response_index);
-      // printf("----------------------------------------\n");
+      memcpy(send_buffer + 12, response + old_response_index,
+             response_index - old_response_index);
+
+      // printResponseHex("Buffer", buffer,
+      //                  12 + response_index - old_response_index);
+      // printResponseHex("send_buffer", send_buffer,
+      //                  12 + response_index - old_response_index);
+
+      if (sendto(forwardSocket, send_buffer,
+                 12 + response_index - old_response_index, 0,
+                 (struct sockaddr *)&forward_addr,
+                 sizeof(forward_addr)) == -1) {
+        perror("Failed to send data to forwarding server");
+        close(forwardSocket);
+        exit(EXIT_FAILURE);
+      }
+
+      // printf("sent!\n");
+
+      // Receive the response from the forwarding server
+      struct sockaddr_in forwardResponseAddr;
+      socklen_t forwardResponseAddrLen = sizeof(forwardResponseAddr);
+      ssize_t responseSize = recvfrom(
+          forwardSocket, recv_buffer, sizeof(recv_buffer), 0,
+          (struct sockaddr *)&forwardResponseAddr, &forwardResponseAddrLen);
+      if (responseSize == -1) {
+        perror("Failed to receive data from forwarding server");
+        close(forwardSocket);
+        exit(EXIT_FAILURE);
+      }
+
+      recv_buffer[responseSize] = '\0';
+      // printResponseHex("Received data", recv_buffer, responseSize);
+      // Null-terminate the received data
+
+      memcpy(answers_buffer + answers_buffer_index,
+             recv_buffer + 12 + response_index - old_response_index,
+             responseSize - (12 + response_index - old_response_index));
+
+      answers_buffer_index +=
+          responseSize - (12 + response_index - old_response_index);
     }
-    add_answer(response, &response_index);
+    close(forwardSocket);
+    // add_answer(response, &response_index);
+    memcpy(response + response_index, answers_buffer, answers_buffer_index);
+    response_index += answers_buffer_index;
     // printResponseHex("Response", response, bytesRead);
-    // printResponseHex("Response", response, response_index);
+    response[5] = num_questions;
+    response[7] = num_questions;
+    response[2] = buffer[2] | 0x80;
+    response[3] = (buffer[2] & 0b01111000) == 0 ? 0 : 0x04;
+    // printResponseHex("Full Response", response, response_index);
     // printf("----------------------------------------\n");
 
     // Send response
@@ -214,14 +308,3 @@ int main() {
 
   return 0;
 }
-
-// stage 3 response
-// 04 D2 80 00 00 01 00 00 00 00 00 00 0C 63 6F 64
-// 65 63 72 61 66 74 65 72 73 02 69 6F 00 00 01 00
-// 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-
-// stage 4 response
-// 04 D2 80 00 00 01 00 01 00 00 00 00 0C 63 6F 64
-// 65 63 72 61 66 74 65 72 73 02 69 6F 00 00 01 00
-// 01 0C 63 6F 64 65 63 72 61 66 74 65 72 73 02 69
-// 6F 00 00 01 00 01 00 00 00 3C 00 04 38 38 38 38
